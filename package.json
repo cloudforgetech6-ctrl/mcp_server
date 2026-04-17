@@ -8,7 +8,7 @@
   "homepage": "https://cloudforge.cloud",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cloudforge-ai/cloudforge-mcp"
+    "url": "git+https://github.com/cloudforge-ai/cloudforge-mcp.git"
   },
   "bugs": {
     "url": "https://cloudforge.cloud/support"
@@ -36,7 +36,7 @@
     "LICENSE"
   ],
   "bin": {
-    "cloudforge-mcp": "./dist/index.js"
+    "cloudforge-mcp": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
