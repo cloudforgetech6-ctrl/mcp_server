@@ -1,27 +1,59 @@
 # CloudForge MCP — Publishing & Submission Guide
 
-## Step 1 — Publish to npm (do this first)
+## Status
 
-```bash
-cd C:\Others\IAC\mcp_servers\cloudforge-mcp
-npm login
-npm publish
-```
-
-Once published, the package is live at `https://www.npmjs.com/package/cloudforge-mcp`
-and users can run it with `npx cloudforge-mcp` — no manual install needed.
+| Platform | Status | URL |
+|----------|--------|-----|
+| **npm** | ✅ Published | https://www.npmjs.com/package/cloudforge-mcp |
+| **Anthropic MCP Registry** | ✅ Published | https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.cloudforgetech6-ctrl/cloudforge |
+| **mcp.so** | ✅ Submitted | https://mcp.so/server/cloudforge----terraform-visual-diagram-&-iac-generator |
+| **Smithery** | ⏳ Pending | https://smithery.ai |
+| **Glama** | ⏳ Pending | https://glama.ai/mcp/servers |
+| **Awesome MCP Servers** | ⏳ Pending | https://github.com/punkpeye/awesome-mcp-servers |
 
 ---
 
-## Step 2 — Submit to Marketplaces
+## npm
 
-### mcp.so
+**Package:** `cloudforge-mcp`
+**Published by:** `cloudforgeadmin`
 
-- **URL:** https://mcp.so/submit
-- **Type:** MCP Server
-- **Name:** `CloudForge — Terraform Visual Diagram & IaC Generator`
-- **URL:** `https://github.com/cloudforgetech6-ctrl/mcp_server`
-- **Server Config:**
+To publish a new version:
+```bash
+cd C:\Others\IAC\mcp_servers\cloudforge-mcp
+# bump version in package.json and server.json
+npm publish --otp=YOUR_OTP_CODE
+```
+
+---
+
+## Anthropic MCP Registry (Official)
+
+**Server name:** `io.github.cloudforgetech6-ctrl/cloudforge`
+**Registry URL:** https://registry.modelcontextprotocol.io
+**Search:** https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.cloudforgetech6-ctrl/cloudforge
+
+To publish a new version:
+```bash
+cd C:\Others\IAC\mcp_servers\cloudforge-mcp
+.\mcp-publisher.exe login github   # only needed if token expired
+.\mcp-publisher.exe publish
+```
+
+The `server.json` file controls what is submitted. Key fields:
+- `name` — must match `mcpName` in `package.json` (`io.github.cloudforgetech6-ctrl/cloudforge`)
+- `version` — must match the npm published version
+- `description` — max 100 characters
+
+---
+
+## mcp.so
+
+**Submitted as:** `cloudforge----terraform-visual-diagram-&-iac-generator`
+**Account:** cloudforgetech6@gmail.com
+**GitHub URL:** https://github.com/cloudforgetech6-ctrl/mcp_server
+
+Server config used:
 ```json
 {
   "mcpServers": {
@@ -38,33 +70,31 @@ and users can run it with `npx cloudforge-mcp` — no manual install needed.
 
 ---
 
-### Smithery
+## Smithery
 
-- **URL:** https://smithery.ai
-- Submit via their registry form
-- Provide the GitHub URL: `https://github.com/cloudforgetech6-ctrl/mcp_server`
-- Smithery auto-scans tools and descriptions from the README
-
----
-
-### Glama
-
-- **URL:** https://glama.ai/mcp/servers
-- Submit the GitHub URL or npm package name: `cloudforge-mcp`
+- URL: https://smithery.ai
+- Submit: GitHub URL `https://github.com/cloudforgetech6-ctrl/mcp_server`
+- Smithery auto-scans tools from README
 
 ---
 
-### Anthropic MCP Hub (most important)
+## Glama
 
-The official directory — Claude users check this first.
+- URL: https://glama.ai/mcp/servers
+- Submit: GitHub URL or npm package name `cloudforge-mcp`
 
-1. Fork `https://github.com/modelcontextprotocol/servers`
-2. Add an entry to the `README.md` under the relevant category (e.g. **Cloud Infrastructure / DevOps**)
-3. Entry format:
+---
+
+## Awesome MCP Servers (punkpeye)
+
+- Fork `https://github.com/punkpeye/awesome-mcp-servers` with `cloudforgetech6-ctrl` account
+- Add under **Cloud Platforms** or **DevOps** section:
+
+```markdown
+- [CloudForge](https://github.com/cloudforgetech6-ctrl/mcp_server) - Visualise cloud architecture diagrams, generate Terraform HCL, import IaC, and manage Azure/AWS/GCP infrastructure. ([npm](https://www.npmjs.com/package/cloudforge-mcp))
 ```
-- [CloudForge](https://github.com/cloudforgetech6-ctrl/mcp_server) — Visualise cloud diagrams, generate Terraform HCL, import IaC, and manage Azure/AWS/GCP infrastructure from Claude.
-```
-4. Open a PR
+
+- Open a PR
 
 ---
 
@@ -78,10 +108,12 @@ The official directory — Claude users check this first.
 
 ---
 
-## Order of operations
+## Version bump checklist
 
-```
-npm publish  →  mcp.so  →  Smithery  →  Glama  →  Anthropic MCP Hub PR
-```
-
-npm must be done first. All other platforms verify the npx command works.
+When releasing a new version:
+- [ ] Bump `version` in `package.json`
+- [ ] Bump `mcpName` stays the same, only `version` changes
+- [ ] Bump `version` and `packages[0].version` in `server.json`
+- [ ] `npm publish --otp=CODE`
+- [ ] `.\mcp-publisher.exe publish`
+- [ ] Push to GitHub

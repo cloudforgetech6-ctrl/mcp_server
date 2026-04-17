@@ -1,6 +1,7 @@
 {
   "name": "cloudforge-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
+  "mcpName": "io.github.cloudforgetech6-ctrl/cloudforge",
   "description": "MCP server for CloudForge — visualise cloud diagrams, generate Terraform, and manage infrastructure with AI",
   "type": "module",
   "author": "CloudForge <support@cloudforge.cloud>",
@@ -8,7 +9,7 @@
   "homepage": "https://cloudforge.cloud",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cloudforge-ai/cloudforge-mcp.git"
+    "url": "git+https://github.com/cloudforgetech6-ctrl/mcp_server.git"
   },
   "bugs": {
     "url": "https://cloudforge.cloud/support"
