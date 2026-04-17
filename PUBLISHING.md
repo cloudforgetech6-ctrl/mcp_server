@@ -8,7 +8,7 @@
 | **Anthropic MCP Registry** | ✅ Published | https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.cloudforgetech6-ctrl/cloudforge |
 | **mcp.so** | ✅ Submitted | https://mcp.so/server/cloudforge----terraform-visual-diagram-&-iac-generator |
 | **Smithery** | ⏳ Pending | https://smithery.ai |
-| **Glama** | ⏳ Pending | https://glama.ai/mcp/servers |
+| **Glama** | ✅ Submitted | https://glama.ai/mcp/servers |
 | **Awesome MCP Servers** | ✅ PR Submitted | https://github.com/punkpeye/awesome-mcp-servers/compare/main...cloudforgetech6-ctrl:awesome-mcp-servers:add-cloudforge-mcp |
 
 ---
