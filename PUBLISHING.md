@@ -9,7 +9,7 @@
 | **mcp.so** | ✅ Submitted | https://mcp.so/server/cloudforge----terraform-visual-diagram-&-iac-generator |
 | **Smithery** | ⏳ Pending | https://smithery.ai |
 | **Glama** | ⏳ Pending | https://glama.ai/mcp/servers |
-| **Awesome MCP Servers** | ⏳ Pending | https://github.com/punkpeye/awesome-mcp-servers |
+| **Awesome MCP Servers** | ✅ PR Submitted | https://github.com/punkpeye/awesome-mcp-servers/compare/main...cloudforgetech6-ctrl:awesome-mcp-servers:add-cloudforge-mcp |
 
 ---
 
@@ -87,14 +87,14 @@ Server config used:
 
 ## Awesome MCP Servers (punkpeye)
 
-- Fork `https://github.com/punkpeye/awesome-mcp-servers` with `cloudforgetech6-ctrl` account
-- Add under **Cloud Platforms** or **DevOps** section:
+- ✅ Forked and PR submitted from `cloudforgetech6-ctrl` account
+- PR branch: `cloudforgetech6-ctrl:awesome-mcp-servers:add-cloudforge-mcp`
+- PR title: `Add CloudForge MCP server — Terraform diagrams & IaC for Azure/AWS/GCP`
+- Entry added after `cloudflare/mcp-server-cloudflare` in the Cloud Platforms section:
 
 ```markdown
-- [CloudForge](https://github.com/cloudforgetech6-ctrl/mcp_server) - Visualise cloud architecture diagrams, generate Terraform HCL, import IaC, and manage Azure/AWS/GCP infrastructure. ([npm](https://www.npmjs.com/package/cloudforge-mcp))
+- [cloudforgetech6-ctrl/mcp_server](https://github.com/cloudforgetech6-ctrl/mcp_server) [![cloudforge-mcp MCP server](https://glama.ai/mcp/servers/cloudforgetech6-ctrl/mcp_server/badges/score.svg)](https://glama.ai/mcp/servers/cloudforgetech6-ctrl/mcp_server) 📇 ☁️ - Visualise cloud architecture diagrams, generate Terraform HCL, import existing IaC, and manage Azure/AWS/GCP resources with AI. Authenticate with a CloudForge API key from cloudforge.cloud.
 ```
-
-- Open a PR
 
 ---
 
