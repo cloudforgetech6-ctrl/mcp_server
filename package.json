@@ -1,0 +1,56 @@
+{
+  "name": "cloudforge-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for CloudForge — visualise cloud diagrams, generate Terraform, and manage infrastructure with AI",
+  "type": "module",
+  "author": "CloudForge <support@cloudforge.cloud>",
+  "license": "MIT",
+  "homepage": "https://cloudforge.cloud",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloudforge-ai/cloudforge-mcp"
+  },
+  "bugs": {
+    "url": "https://cloudforge.cloud/support"
+  },
+  "keywords": [
+    "mcp",
+    "modelcontextprotocol",
+    "cloudforge",
+    "terraform",
+    "infrastructure",
+    "iac",
+    "azure",
+    "aws",
+    "gcp",
+    "diagram",
+    "cloud",
+    "devops"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "cloudforge-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.10.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

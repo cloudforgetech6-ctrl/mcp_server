@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cloudforge": {
+      "command": "npx",
+      "args": ["-y", "cloudforge-mcp"],
+      "env": {
+        "CLOUDFORGE_TOKEN": "your-bearer-token-here"
+      }
+    }
+  }
+}
