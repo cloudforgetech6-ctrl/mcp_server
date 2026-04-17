@@ -88,19 +88,18 @@ Add to your `claude_desktop_config.json`:
 
 ## Authentication
 
-Get your bearer token from [cloudforge.cloud](https://cloudforge.cloud):
+1. Sign in at [cloudforge.cloud](https://cloudforge.cloud)
+2. Go to **Account → API Keys**
+3. Click **Generate API Key**, give it a name (e.g. `CloudForge MCP`), and copy the key — it starts with `cf_live_` and is shown only once
+4. Set it as `CLOUDFORGE_TOKEN` in your MCP config
 
-1. Sign in to CloudForge
-2. Open browser DevTools → **Application** → **Local Storage** → copy the value of `auth_token`
-3. Paste it as `CLOUDFORGE_TOKEN` in your MCP config
-
-The token is long-lived — you only need to do this once.
+The key is long-lived and can be revoked from the same page at any time.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLOUDFORGE_TOKEN` | _(required)_ | Bearer token from your CloudForge account |
+| `CLOUDFORGE_TOKEN` | _(required)_ | CloudForge API key — must start with `cf_live_` |
 | `CLOUDFORGE_API_URL` | `https://cloudforge.cloud/api` | API base URL — only change if self-hosting |
 
 ## Example prompts

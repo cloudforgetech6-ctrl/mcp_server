@@ -28,6 +28,15 @@ const API_BASE = (
 
 const sessionToken = process.env.CLOUDFORGE_TOKEN || "";
 
+if (!sessionToken) {
+  console.error("ERROR: CLOUDFORGE_TOKEN is not set. Generate an API key at https://cloudforge.cloud/account and set it as CLOUDFORGE_TOKEN.");
+  process.exit(1);
+}
+if (!sessionToken.startsWith("cf_live_")) {
+  console.error("ERROR: CLOUDFORGE_TOKEN must be a CloudForge API key starting with 'cf_live_'. Generate one at https://cloudforge.cloud/account.");
+  process.exit(1);
+}
+
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 function authHeaders(): Record<string, string> {
