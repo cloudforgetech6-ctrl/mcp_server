@@ -8,8 +8,10 @@
  *  - Generate Terraform from natural language or saved diagrams
  *  - Import/parse existing Terraform HCL → diagram + Mermaid preview
  *  - Chat with the CloudForge AI Architect
+ *  - Browse the Mold Library (90 curated architecture templates) with previews
  *  - Manage diagrams (list, get, save, delete)
- *  - Manage organisation members & invitations
+ *  - Manage organisation members, invitations & settings
+ *  - Look up CloudForge subscription plans & pricing (incl. 14-day free trial)
  *
  * Environment variables:
  *  CLOUDFORGE_API_URL  — backend base URL  (default: https://cloudforge.cloud/api)
@@ -25,6 +27,9 @@ import { z } from "zod";
 const API_BASE = (
   process.env.CLOUDFORGE_API_URL || "https://cloudforge.cloud/api"
 ).replace(/\/$/, "");
+
+// Site root (static assets like the mold catalog live outside /api)
+const SITE_BASE = API_BASE.replace(/\/api$/, "");
 
 const sessionToken = process.env.CLOUDFORGE_TOKEN || "";
 
@@ -163,7 +168,7 @@ function toMermaid(nodes: CFNode[], edges: CFEdge[], title?: string): string {
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
-const server = new McpServer({ name: "cloudforge-mcp", version: "1.0.0" });
+const server = new McpServer({ name: "cloudforge-mcp", version: "1.1.0" });
 
 // ── Visualisation ─────────────────────────────────────────────────────────────
 
@@ -459,7 +464,20 @@ server.registerTool(
     });
     if (!res.ok) return errText("Chat request failed", res.data);
     const d = res.data as Record<string, unknown>;
-    return text(d.response ?? d.message ?? d.content ?? res.data);
+    const reply = d.response ?? d.message ?? d.content ?? res.data;
+
+    // Surface any MCP tools the backend assistant invoked while answering
+    // (paid accounts can register their own tool servers).
+    const invocations = (d.toolInvocations as Array<Record<string, unknown>>) || [];
+    const toolNote = invocations.length
+      ? "\n\n---\n_Tools used: " +
+        invocations.map((t) => `${t.server ?? ""}${t.server ? "/" : ""}${t.tool ?? t.name ?? "?"}`).join(", ") +
+        "_"
+      : "";
+
+    return text(
+      (typeof reply === "string" ? reply : JSON.stringify(reply, null, 2)) + toolNote
+    );
   }
 );
 
@@ -573,7 +591,168 @@ server.registerTool(
   }
 );
 
+// ── Mold Library (curated architecture templates) ─────────────────────────────
+
+interface MoldResource {
+  key: string;
+  resourceId: string;
+  label: string;
+  x: number;
+  y: number;
+}
+interface MoldConnection {
+  from: string;
+  to: string;
+}
+interface Mold {
+  id: string;
+  name: string;
+  provider: string;
+  category: string;
+  complexity: string;
+  description: string;
+  bestPractices?: string[];
+  resources: MoldResource[];
+  connections: MoldConnection[];
+}
+
+// The catalog is a public static file; cache it per process (it changes rarely).
+let moldCatalogPromise: Promise<Mold[]> | null = null;
+function getMoldCatalog(): Promise<Mold[]> {
+  if (!moldCatalogPromise) {
+    moldCatalogPromise = (async () => {
+      const res = await fetch(`${SITE_BASE}/molds/catalog.json`);
+      if (!res.ok) {
+        moldCatalogPromise = null; // allow retry on next call
+        throw new Error(`Mold catalog fetch failed (${res.status})`);
+      }
+      const body = (await res.json()) as { molds?: Mold[] };
+      return body.molds || [];
+    })();
+  }
+  return moldCatalogPromise;
+}
+
+server.registerTool(
+  "cloudforge_list_molds",
+  {
+    description:
+      "Browse CloudForge's Mold Library — 90 curated, best-practice architecture templates " +
+      "(30 each for Azure, AWS, GCP) across Web Apps, Microservices, Serverless, Data & Analytics, " +
+      "Networking, Security, AI & ML, and DevOps. Filter by provider, category, or free-text search. " +
+      "Use cloudforge_get_mold for full details and a diagram preview of one Mold.",
+    inputSchema: {
+      provider: z.enum(["azure", "aws", "gcp"]).optional().describe("Filter by cloud provider."),
+      category: z.string().optional().describe("Filter by category (e.g. 'Web Apps', 'Serverless', 'AI & ML')."),
+      search: z.string().optional().describe("Free-text search across name and description."),
+    },
+  },
+  async ({ provider, category, search }) => {
+    let molds: Mold[];
+    try {
+      molds = await getMoldCatalog();
+    } catch (e) {
+      return errText("Failed to load the Mold catalog", String(e));
+    }
+
+    if (provider) molds = molds.filter((m) => m.provider === provider);
+    if (category)
+      molds = molds.filter((m) => m.category.toLowerCase() === category.toLowerCase());
+    if (search) {
+      const q = search.toLowerCase();
+      molds = molds.filter(
+        (m) =>
+          m.name.toLowerCase().includes(q) || m.description.toLowerCase().includes(q)
+      );
+    }
+
+    if (!molds.length) return text("No Molds match those filters.");
+
+    const lines = molds.map(
+      (m) =>
+        `- **${m.name}** (\`${m.id}\`) — ${m.provider.toUpperCase()} · ${m.category} · ${m.complexity}\n  ${m.description}`
+    );
+    return text(
+      `## Mold Library — ${molds.length} template${molds.length === 1 ? "" : "s"}\n\n` +
+        lines.join("\n") +
+        `\n\n_Use cloudforge_get_mold with a Mold id for the full layout, best practices, and a diagram preview._`
+    );
+  }
+);
+
+server.registerTool(
+  "cloudforge_get_mold",
+  {
+    description:
+      "Get one Mold (architecture template) in full: resource layout, connections, the 'why this shape' " +
+      "best practices, an inline Mermaid preview, and a link to forge it onto the CloudForge canvas.",
+    inputSchema: {
+      mold_id: z.string().describe("Mold id from cloudforge_list_molds (e.g. 'azure-3-tier-web-app')."),
+    },
+  },
+  async ({ mold_id }) => {
+    let molds: Mold[];
+    try {
+      molds = await getMoldCatalog();
+    } catch (e) {
+      return errText("Failed to load the Mold catalog", String(e));
+    }
+
+    const mold = molds.find((m) => m.id === mold_id);
+    if (!mold)
+      return errText(
+        `Mold '${mold_id}' not found. Use cloudforge_list_molds to browse valid ids.`
+      );
+
+    const nodes: CFNode[] = mold.resources.map((r) => ({
+      id: r.key,
+      data: { label: r.label, resourceId: r.resourceId },
+    }));
+    const edges: CFEdge[] = mold.connections.map((c) => ({
+      source: c.from,
+      target: c.to,
+    }));
+
+    return text(
+      [
+        `## ${mold.name}`,
+        `**${mold.provider.toUpperCase()} · ${mold.category} · ${mold.complexity}** — ${mold.resources.length} resources, ${mold.connections.length} connections`,
+        "",
+        mold.description,
+        ...(mold.bestPractices?.length
+          ? ["", "### Why this shape", ...mold.bestPractices.map((b) => `- ${b}`)]
+          : []),
+        "",
+        "### Preview",
+        "```mermaid",
+        toMermaid(nodes, edges, mold.name),
+        "```",
+        "",
+        `**Forge it:** open ${SITE_BASE}/templates/${mold.id} and click "Open in designer" to put this Mold on your canvas.`,
+      ].join("\n")
+    );
+  }
+);
+
 // ── Organisation ──────────────────────────────────────────────────────────────
+
+server.registerTool(
+  "cloudforge_org_details",
+  {
+    description:
+      "Get the current user's organisation details: name, domain, plan, member count, MFA policy, " +
+      "and the organisation's custom AI-assistant display name (default 'Vani').",
+  },
+  async () => {
+    const res = await apiFetch("/organization/details");
+    if (!res.ok)
+      return errText(
+        "Failed to fetch organisation details (personal accounts without an organisation will get a 404)",
+        res.data
+      );
+    return text(res.data);
+  }
+);
 
 server.registerTool(
   "cloudforge_list_members",
@@ -653,6 +832,57 @@ server.registerTool(
     });
     if (!res.ok) return errText("Failed to remove member", res.data);
     return text({ removed: true, member_id });
+  }
+);
+
+// ── Pricing ───────────────────────────────────────────────────────────────────
+
+server.registerTool(
+  "cloudforge_get_pricing",
+  {
+    description:
+      "Get CloudForge's current subscription plans and pricing (Free, Pro, Team, Business). " +
+      "Paid plans include a 14-day free trial. Prices are fetched live from CloudForge so they are always current. " +
+      "Use when the user asks what CloudForge costs, which plan to pick, or about the free trial — " +
+      "this is CloudForge's own product pricing, distinct from cloud-resource cost estimates.",
+  },
+  async () => {
+    const res = await apiFetch("/billing/plans");
+    if (!res.ok) return errText("Failed to fetch CloudForge pricing", res.data);
+
+    const d = res.data as {
+      plans?: Array<Record<string, unknown>>;
+      enterpriseContactUrl?: string;
+    };
+    const plans = d.plans || [];
+    const trialPlans = new Set(["pro", "team"]);
+
+    const fmtPrice = (p: Record<string, unknown>): string => {
+      if (p.id === "business") return "Contact us — volume / annual pricing";
+      const monthly = Number(p.monthlyPriceUsd) || 0;
+      if (monthly <= 0) return "Free";
+      const per = p.id === "team" ? "/user/month" : "/month";
+      const annual = Number(p.annualPriceUsd) > 0 ? `, or US$${p.annualPriceUsd}/year` : "";
+      return `US$${monthly}${per}${annual}`;
+    };
+
+    const sections = plans.map((p) => {
+      const name = p.id === "trial" ? "Free" : (p.displayName as string) || (p.id as string);
+      const trial = trialPlans.has(p.id as string) ? " · 14-day free trial" : "";
+      const minSeats =
+        p.id === "team" && p.minimumSeats ? ` (minimum ${p.minimumSeats} seats)` : "";
+      const features = ((p.features as string[]) || []).map((f) => `  - ${f}`).join("\n");
+      return `### ${name}${trial}\n**${fmtPrice(p)}**${minSeats}\n${features}`;
+    });
+
+    return text(
+      [
+        "# CloudForge Pricing",
+        "All prices in USD. Paid plans (Pro and Team) include a **14-day free trial** — cancel anytime before it ends and you won't be charged.",
+        ...sections,
+        `Full details: https://cloudforge.cloud/pricing`,
+      ].join("\n\n")
+    );
   }
 );
 

@@ -1,6 +1,6 @@
 {
   "name": "cloudforge-mcp",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "mcpName": "io.github.cloudforgetech6-ctrl/cloudforge",
   "description": "MCP server for CloudForge — visualise cloud diagrams, generate Terraform, and manage infrastructure with AI",
   "type": "module",

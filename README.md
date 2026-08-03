@@ -30,6 +30,13 @@ MCP server for [CloudForge](https://cloudforge.cloud) — lets Claude and other 
 | `cloudforge_chat` | Ask the CloudForge AI Architect for IaC advice, cost estimates, security reviews |
 | `cloudforge_suggest_resources` | Get AI-recommended resources and connections for a described use case |
 
+### Mold Library
+
+| Tool | Description |
+|------|-------------|
+| `cloudforge_list_molds` | Browse 90 curated architecture templates (30 per cloud) — filter by provider, category, or search |
+| `cloudforge_get_mold` | Full detail for one Mold: layout, "why this shape" best practices, inline Mermaid preview, forge link |
+
 ### Diagram Management
 
 | Tool | Description |
@@ -44,11 +51,18 @@ MCP server for [CloudForge](https://cloudforge.cloud) — lets Claude and other 
 
 | Tool | Description |
 |------|-------------|
+| `cloudforge_org_details` | Organisation overview: name, plan, member count, MFA policy, custom assistant name |
 | `cloudforge_list_members` | List organisation members (name, email, role, status) |
 | `cloudforge_invite_member` | Send an organisation invitation |
 | `cloudforge_list_invitations` | List pending invitations |
 | `cloudforge_cancel_invitation` | Cancel a pending invitation |
 | `cloudforge_remove_member` | Remove a member from the organisation |
+
+### Pricing
+
+| Tool | Description |
+|------|-------------|
+| `cloudforge_get_pricing` | Get CloudForge's current plans & pricing (Free, Pro, Team, Business), incl. the 14-day free trial — fetched live |
 
 ## Setup
 
@@ -108,6 +122,12 @@ The key is long-lived and can be revoked from the same page at any time.
 Show me my recent diagrams
 ```
 ```
+What serverless Molds do you have for AWS?
+```
+```
+Show me the azure-3-tier-web-app Mold and explain why it's shaped that way
+```
+```
 Render diagram <id> as a Mermaid chart
 ```
 ```
@@ -122,6 +142,19 @@ What are the security best practices for the resources in diagram <id>?
 ```
 Invite john@example.com as a Member to my organisation
 ```
+
+## Pricing
+
+The `cloudforge_get_pricing` tool returns CloudForge's current plans live (so they're always up to date). All prices USD; paid plans include a **14-day free trial**:
+
+| Plan | Price |
+|---|---|
+| **Free** | $0 — visual designer, limited export, community support |
+| **Pro** | **US$9.99/mo** or US$99/yr · 14-day free trial |
+| **Team** | **US$12/user/mo** (3-seat min) · 14-day free trial |
+| **Business** | Contact us — volume/annual pricing |
+
+Full details: [cloudforge.cloud/pricing](https://cloudforge.cloud/pricing).
 
 ## Self-hosting
 
