@@ -33,13 +33,23 @@ const SITE_BASE = API_BASE.replace(/\/api$/, "");
 
 const sessionToken = process.env.CLOUDFORGE_TOKEN || "";
 
+// Deliberately no hard exit, and deliberately no format check.
+//
+// Exiting on a missing token was wrong: cloudforge_parse_terraform,
+// cloudforge_list_molds and cloudforge_get_pricing need no account at all, and a
+// server that dies at startup can never serve them. Signed-out users are a real
+// audience — that path is the product's front door.
+//
+// The format check was wrong too, and worse: it demanded a `cf_live_` API key,
+// but the VS Code extension and the JetBrains plugin both pass the JWT they hold
+// from sign-in (SecretStorage key `cloudforge.jwt`). The API accepts either as a
+// bearer token; only this guard did not, so the server exited instantly for every
+// editor user. Whether a token is valid is the API's judgement, not ours.
 if (!sessionToken) {
-  console.error("ERROR: CLOUDFORGE_TOKEN is not set. Generate an API key at https://cloudforge.cloud/account and set it as CLOUDFORGE_TOKEN.");
-  process.exit(1);
-}
-if (!sessionToken.startsWith("cf_live_")) {
-  console.error("ERROR: CLOUDFORGE_TOKEN must be a CloudForge API key starting with 'cf_live_'. Generate one at https://cloudforge.cloud/account.");
-  process.exit(1);
+  console.error(
+    "CloudForge MCP: no CLOUDFORGE_TOKEN set — tools that need an account will say so. " +
+      "Sign in through the CloudForge extension, or set a key from https://cloudforge.cloud/account."
+  );
 }
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -65,6 +75,21 @@ async function apiFetch(
   const data = ct.includes("application/json")
     ? await res.json()
     : await res.text();
+  // Signed out, a 401 is expected rather than exceptional — say which of the two
+  // it is, because "unauthorized" alone leaves the user guessing whether their
+  // token is wrong or simply absent.
+  if ((res.status === 401 || res.status === 403) && !sessionToken) {
+    return {
+      ok: false,
+      status: res.status,
+      data:
+        "This needs a CloudForge account. Sign in through the CloudForge extension, " +
+        "or set CLOUDFORGE_TOKEN from https://cloudforge.cloud/account. " +
+        "Tools that work without one: cloudforge_parse_terraform, cloudforge_list_molds, " +
+        "cloudforge_get_mold, cloudforge_get_pricing, cloudforge_mermaid_from_json.",
+    };
+  }
+
   return { ok: res.ok, status: res.status, data };
 }
 
@@ -168,7 +193,7 @@ function toMermaid(nodes: CFNode[], edges: CFEdge[], title?: string): string {
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
-const server = new McpServer({ name: "cloudforge-mcp", version: "1.1.0" });
+const server = new McpServer({ name: "cloudforge-mcp", version: "1.2.0" });
 
 // ── Visualisation ─────────────────────────────────────────────────────────────
 
@@ -883,6 +908,714 @@ server.registerTool(
         `Full details: https://cloudforge.cloud/pricing`,
       ].join("\n\n")
     );
+  }
+);
+
+// ─── Deploy: plan, apply, approve, destroy ────────────────────────────────────
+//
+// These endpoints stream Server-Sent Events rather than returning JSON, and the
+// apply path deliberately BLOCKS on a human approval gate for up to 30 minutes.
+// Holding a stream open that long inside a tool call is the wrong shape, so every
+// deploy tool here reads the stream with a hard cap, extracts the markers the
+// orchestrator emits, and hands back a job id the agent can poll.
+
+const SSE_MARKERS = [
+  "[JOB_ID]",
+  "[HEALED_CODE]",
+  "[PLAN_DONE_AWAITING_APPROVAL]",
+  "[QUALITY_REPORT]",
+  "[PLAN_JSON]",
+  "[ERROR]",
+  "[DONE]",
+] as const;
+
+interface StreamResult {
+  jobId?: string;
+  awaitingApproval: boolean;
+  done: boolean;
+  error?: string;
+  planJson?: unknown;
+  qualityReport?: unknown;
+  log: string[];
+}
+
+function decodeMarker(line: string, marker: string): unknown {
+  const raw = line.slice(marker.length).trim();
+  try {
+    return JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Consumes any of the API's SSE streams until it completes, reaches an approval
+ * gate, or hits [capMs]. Returns whatever markers arrived.
+ *
+ * Shared by the deployment tools and the drift healer: both speak the same
+ * marker protocol, and a second copy of this loop would drift from the first.
+ */
+async function streamSse(
+  path: string,
+  body: Record<string, unknown> | null,
+  capMs = 120_000
+): Promise<StreamResult> {
+  const result: StreamResult = { awaitingApproval: false, done: false, log: [] };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), capMs);
+
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: authHeaders(),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: controller.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      // A refusal arrives as a 400 with a sentence worth repeating verbatim —
+      // "HTTP 400" would strip the only part the user can act on.
+      let detail = "";
+      try {
+        const raw = await res.text();
+        detail = (JSON.parse(raw) as { message?: string }).message ?? raw;
+      } catch { /* non-JSON body */ }
+      result.error = detail ? detail.slice(0, 600) : `HTTP ${res.status}`;
+      return result;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/^data:\s?/, "").trimEnd();
+        if (!line) continue;
+
+        if (line.startsWith("[JOB_ID]")) result.jobId = String(decodeMarker(line, "[JOB_ID]"));
+        else if (line.startsWith("[PLAN_JSON]")) result.planJson = decodeMarker(line, "[PLAN_JSON]");
+        else if (line.startsWith("[QUALITY_REPORT]")) result.qualityReport = decodeMarker(line, "[QUALITY_REPORT]");
+        else if (line.startsWith("[ERROR]")) result.error = String(decodeMarker(line, "[ERROR]"));
+        else if (line.startsWith("[PLAN_DONE_AWAITING_APPROVAL]")) {
+          result.awaitingApproval = true;
+          result.planJson ??= decodeMarker(line, "[PLAN_DONE_AWAITING_APPROVAL]");
+        } else if (line.startsWith("[DONE]")) result.done = true;
+        else if (!SSE_MARKERS.some((m) => line.startsWith(m))) result.log.push(line);
+      }
+
+      // Nothing useful comes after either of these, and apply would otherwise
+      // hold the connection open on the 30-minute approval gate.
+      if (result.awaitingApproval || result.done || result.error) break;
+    }
+
+    await reader.cancel().catch(() => {});
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      result.error ??= `Stream exceeded ${Math.round(capMs / 1000)}s — poll cloudforge_deployment_status with the job id.`;
+    } else {
+      result.error ??= (err as Error).message;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
+  return result;
+}
+
+function streamDeployment(
+  action: "plan" | "apply" | "dryrun" | "validate" | "destroy",
+  body: Record<string, unknown>,
+  capMs = 120_000
+): Promise<StreamResult> {
+  return streamSse(`/Deployment/${action}`, body, capMs);
+}
+
+function renderStream(action: string, r: StreamResult): string {
+  const parts = [`## ${action}`];
+  if (r.jobId) parts.push(`**Job:** \`${r.jobId}\``);
+  if (r.error) parts.push(`**Error:** ${r.error}`);
+
+  if (r.planJson) {
+    const p = r.planJson as Record<string, unknown>;
+    const add = p.add ?? p.create ?? "?";
+    const change = p.change ?? p.update ?? "?";
+    const destroy = p.destroy ?? p.delete ?? "?";
+    parts.push(`**Plan:** ${add} to add · ${change} to change · ${destroy} to destroy`);
+    if (Number(destroy) > 0) {
+      parts.push(`> ⚠️ This plan DESTROYS ${destroy} resource(s). Confirm with the user before approving.`);
+    }
+  }
+
+  if (r.qualityReport) {
+    parts.push("**Quality gate:**\n```json\n" + JSON.stringify(r.qualityReport, null, 2).slice(0, 2000) + "\n```");
+  }
+
+  if (r.awaitingApproval) {
+    parts.push(
+      "**Awaiting approval.** Nothing has been applied. Call `cloudforge_approve_deployment` " +
+        "with this job id once the user has agreed to the plan above."
+    );
+  } else if (r.done) {
+    parts.push("**Finished.**");
+  }
+
+  const tail = r.log.filter(Boolean).slice(-40);
+  if (tail.length) parts.push("```\n" + tail.join("\n").slice(-4000) + "\n```");
+
+  return parts.join("\n\n");
+}
+
+const deploymentTarget = {
+  diagram_id: z.string().optional().describe("Saved diagram to deploy. Provide this or terraform_code."),
+  terraform_code: z.string().optional().describe("Raw HCL to deploy instead of a saved diagram."),
+  cloud_provider: z.enum(["azure", "aws", "gcp"]).optional().describe("Target cloud. Defaults to the diagram's own provider."),
+  connection_id: z.string().optional().describe("Cloud connection to deploy through."),
+};
+
+function deployBody(a: Record<string, unknown>): Record<string, unknown> {
+  return {
+    diagramId: a.diagram_id,
+    terraformCode: a.terraform_code,
+    cloudProvider: a.cloud_provider,
+    connectionId: a.connection_id,
+    overridePolicy: a.override_policy ?? false,
+  };
+}
+
+server.registerTool(
+  "cloudforge_plan",
+  {
+    description:
+      "Run `terraform plan` and return the add/change/destroy diff plus the security quality gate. " +
+      "Read-only — nothing is created or modified. Always plan before applying, and show the user " +
+      "the diff before calling cloudforge_apply.",
+    inputSchema: deploymentTarget,
+  },
+  async (a) => text(renderStream("terraform plan", await streamDeployment("plan", deployBody(a))))
+);
+
+server.registerTool(
+  "cloudforge_dry_run",
+  {
+    description:
+      "Validate and plan without touching any cloud account — the safest way to check whether " +
+      "infrastructure is deployable. Use this when the user has no cloud connection configured.",
+    inputSchema: deploymentTarget,
+  },
+  async (a) => text(renderStream("dry run", await streamDeployment("dryrun", deployBody(a))))
+);
+
+server.registerTool(
+  "cloudforge_validate_deployment",
+  {
+    description: "Run provider and HCL pre-flight checks (credentials, syntax, required fields) without planning.",
+    inputSchema: deploymentTarget,
+  },
+  async (a) => text(renderStream("validate", await streamDeployment("validate", deployBody(a))))
+);
+
+server.registerTool(
+  "cloudforge_apply",
+  {
+    description:
+      "Start a real deployment — this CREATES CLOUD RESOURCES AND COSTS MONEY. " +
+      "It stops at a human approval gate and applies nothing until cloudforge_approve_deployment is called. " +
+      "Never call this without having shown the user a plan first.",
+    inputSchema: {
+      ...deploymentTarget,
+      override_policy: z
+        .boolean()
+        .optional()
+        .describe("Proceed despite policy violations. Records the intent to override; ask the user first."),
+    },
+  },
+  async (a) => text(renderStream("terraform apply", await streamDeployment("apply", deployBody(a))))
+);
+
+server.registerTool(
+  "cloudforge_destroy",
+  {
+    description:
+      "Start a `terraform destroy` — this PERMANENTLY DELETES the deployed infrastructure. " +
+      "Stops at the same approval gate as apply. Confirm explicitly with the user first.",
+    inputSchema: deploymentTarget,
+  },
+  async (a) => text(renderStream("terraform destroy", await streamDeployment("destroy", deployBody(a))))
+);
+
+server.registerTool(
+  "cloudforge_approve_deployment",
+  {
+    description:
+      "Approve (or reject) a deployment waiting at its approval gate. Only call this after the user " +
+      "has seen the plan and said yes — this is the step that actually changes their cloud.",
+    inputSchema: {
+      job_id: z.string().describe("Job id from cloudforge_plan / cloudforge_apply."),
+      approved: z.boolean().describe("true applies the plan; false abandons the job."),
+    },
+  },
+  async ({ job_id, approved }) => {
+    const res = await apiFetch(`/Deployment/${job_id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ approved }),
+    });
+    if (!res.ok) return errText("Approval failed", res.data);
+    return text(approved ? `Approved. Job \`${job_id}\` is applying.` : `Job \`${job_id}\` rejected; nothing applied.`);
+  }
+);
+
+server.registerTool(
+  "cloudforge_deployment_status",
+  {
+    description: "Current status and log of one deployment job.",
+    inputSchema: { job_id: z.string().describe("Deployment job id.") },
+  },
+  async ({ job_id }) => {
+    const res = await apiFetch(`/Deployment/${job_id}`);
+    if (!res.ok) return errText(`Job ${job_id} not found`, res.data);
+    const j = res.data as Record<string, unknown>;
+    return text(
+      `## Deployment \`${job_id}\`\n\n` +
+        `**${j.action}** · **${j.status}** · ${j.cloudProvider}\n` +
+        `Started ${j.createdAt}${j.completedAt ? ` · finished ${j.completedAt}` : ""}\n\n` +
+        (j.log ? "```\n" + String(j.log).slice(-4000) + "\n```" : "")
+    );
+  }
+);
+
+server.registerTool(
+  "cloudforge_deployment_history",
+  {
+    description: "Every deployment job run against one diagram, newest first.",
+    inputSchema: { diagram_id: z.string().describe("Diagram id.") },
+  },
+  async ({ diagram_id }) => {
+    const res = await apiFetch(`/Deployment/diagram/${diagram_id}`);
+    if (!res.ok) return errText("Could not load deployment history", res.data);
+    const jobs = (res.data as Record<string, unknown>[]) || [];
+    if (!jobs.length) return text("No deployments yet for this diagram.");
+    return text(
+      "## Deployment history\n\n" +
+        jobs
+          .map((j) => `- \`${j.id}\` — **${j.action}** ${j.status} · ${j.createdAt}`)
+          .join("\n")
+    );
+  }
+);
+
+// ─── Terraform quality: fix, validate, cost ───────────────────────────────────
+
+server.registerTool(
+  "cloudforge_fix_terraform",
+  {
+    description:
+      "Repair broken Terraform. Give it the HCL and the error output from plan/apply and it returns " +
+      "corrected code. This is the right tool when a deployment fails — it is the same healer the " +
+      "deployment pipeline uses on itself.",
+    inputSchema: {
+      terraform_code: z.string().describe("The HCL that failed."),
+      error_log: z.string().describe("Error output from terraform validate/plan/apply."),
+      is_modular: z.boolean().optional().describe("True if the code is split across modules."),
+    },
+  },
+  async ({ terraform_code, error_log, is_modular }) => {
+    const res = await apiFetch("/Cloudie/fix-terraform", {
+      method: "POST",
+      body: JSON.stringify({ terraformCode: terraform_code, errorLog: error_log, isModular: !!is_modular }),
+    });
+    if (!res.ok) return errText("Fix failed", res.data);
+    const d = res.data as Record<string, unknown>;
+    const fixed = (d.fixedCode || d.code || d.terraformCode) as string | undefined;
+    if (!fixed) return errText("No corrected code returned", res.data);
+    return text(`## Corrected Terraform\n\n\`\`\`hcl\n${fixed}\n\`\`\`` + (d.explanation ? `\n\n${d.explanation}` : ""));
+  }
+);
+
+server.registerTool(
+  "cloudforge_validate_terraform",
+  {
+    description: "Check HCL for syntax and provider-schema errors without deploying anything.",
+    inputSchema: {
+      terraform_code: z.string().describe("HCL to validate."),
+      cloud_provider: z.enum(["azure", "aws", "gcp"]).optional().describe("Target cloud."),
+    },
+  },
+  async ({ terraform_code, cloud_provider }) => {
+    const res = await apiFetch("/Cloudie/validate-code", {
+      method: "POST",
+      body: JSON.stringify({ code: terraform_code, terraformCode: terraform_code, cloudProvider: cloud_provider }),
+    });
+    if (!res.ok) return errText("Validation failed", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 6000) + "\n```");
+  }
+);
+
+server.registerTool(
+  "cloudforge_estimate_cost",
+  {
+    description:
+      "Estimated monthly cost for a set of resources, broken down per resource. " +
+      "An estimate, not a quote — it does not know the user's committed-use or enterprise discounts.",
+    inputSchema: {
+      resources: z
+        .array(z.record(z.string(), z.unknown()))
+        .describe("Resource objects, each with at least type/terraformType and any sizing fields (sku, instance_type…)."),
+      cloud_provider: z.enum(["azure", "aws", "gcp"]).optional(),
+      region: z.string().optional().describe("Region, e.g. australiaeast or us-east-1."),
+    },
+  },
+  async ({ resources, cloud_provider, region }) => {
+    const res = await apiFetch("/Cloudie/cost-estimate", {
+      method: "POST",
+      body: JSON.stringify({ resources, cloudProvider: cloud_provider, region }),
+    });
+    if (!res.ok) return errText("Cost estimate failed", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 6000) + "\n```");
+  }
+);
+
+server.registerTool(
+  "cloudforge_review_architecture",
+  {
+    description:
+      "AI architecture review of a diagram — reliability, security, cost and scaling trade-offs, " +
+      "with specific findings rather than generic advice.",
+    inputSchema: {
+      diagram_id: z.string().optional().describe("Saved diagram to review."),
+      diagram_json: z.record(z.string(), z.unknown()).optional().describe("Inline {nodes, edges} instead of a saved diagram."),
+    },
+  },
+  async ({ diagram_id, diagram_json }) => {
+    const res = await apiFetch("/Review/architecture", {
+      method: "POST",
+      body: JSON.stringify({ diagramId: diagram_id, diagram: diagram_json }),
+    });
+    if (!res.ok) return errText("Review failed", res.data);
+    const d = res.data as Record<string, unknown>;
+    return text(String(d.review || d.analysis || JSON.stringify(d, null, 2)).slice(0, 8000));
+  }
+);
+
+// ─── Drift ────────────────────────────────────────────────────────────────────
+
+server.registerTool(
+  "cloudforge_scan_drift",
+  {
+    description:
+      "Compare a diagram against what is actually deployed in the cloud and report the differences. " +
+      "Needs a configured cloud connection. Use it to answer 'has anyone changed this by hand?'.",
+    inputSchema: {
+      diagram_id: z.string().describe("Diagram to compare against reality."),
+      connection_id: z.string().optional().describe("Cloud connection to scan through."),
+      cloud_provider: z.enum(["azure", "aws", "gcp"]).optional(),
+    },
+  },
+  async ({ diagram_id, connection_id, cloud_provider }) => {
+    const res = await apiFetch("/Drift/scan", {
+      method: "POST",
+      body: JSON.stringify({ diagramId: diagram_id, connectionId: connection_id, cloudProvider: cloud_provider }),
+    });
+    if (!res.ok) return errText("Drift scan failed", res.data);
+    return text("## Drift scan started\n\n```json\n" + JSON.stringify(res.data, null, 2).slice(0, 4000) + "\n```");
+  }
+);
+
+server.registerTool(
+  "cloudforge_latest_drift",
+  {
+    description: "Most recent drift report for a diagram.",
+    inputSchema: { diagram_id: z.string().describe("Diagram id.") },
+  },
+  async ({ diagram_id }) => {
+    const res = await apiFetch(`/Drift/diagram/${diagram_id}/latest`);
+    if (!res.ok) return errText("No drift report found", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 8000) + "\n```");
+  }
+);
+
+// ─── Remediation: detect, approve, heal ───────────────────────────────────────
+//
+// Note what is NOT exposed here: approving a proposal. Approval is the whole
+// point of the feature — a person reads what would change and consents to it —
+// and a tool that let an agent grant that consent on their behalf would remove
+// the guarantee the rest of the design exists to provide. Detect and report
+// freely; the user approves in the editor or the web app; then heal.
+
+server.registerTool(
+  "cloudforge_drift_report",
+  {
+    description:
+      "Read a drift report by id. Poll this after cloudforge_scan_drift until status is " +
+      "'completed' or 'failed'.",
+    inputSchema: { report_id: z.string().describe("Drift report id returned by the scan.") },
+  },
+  async ({ report_id }) => {
+    const res = await apiFetch(`/Drift/report/${report_id}`);
+    if (!res.ok) return errText("Could not read the drift report", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 8000) + "\n```");
+  }
+);
+
+server.registerTool(
+  "cloudforge_detect_remediations",
+  {
+    description:
+      "Turn a completed drift report into proposed fixes, one per drifted resource. Nothing is " +
+      "applied and nothing is approved — every proposal comes back awaiting a person's decision. " +
+      "Idempotent per finding, so calling it twice is safe.",
+    inputSchema: { report_id: z.string().describe("A completed drift report's id.") },
+  },
+  async ({ report_id }) => {
+    const res = await apiFetch(`/remediation/reports/${report_id}/detect`, { method: "POST" });
+    if (!res.ok) return errText("Detection failed", res.data);
+
+    const d = res.data as { proposals?: unknown[]; awaitingApproval?: number };
+    const n = d?.awaitingApproval ?? d?.proposals?.length ?? 0;
+    return text(
+      `## ${n} fix(es) proposed\n\n` +
+        "All of them are awaiting approval. Show them to the user and let them decide — " +
+        "approve in the CloudForge panel (VS Code), the Drift panel (web), or the JetBrains tool " +
+        "window. Then call `cloudforge_heal_approved`.\n\n```json\n" +
+        JSON.stringify(d?.proposals ?? d, null, 2).slice(0, 6000) +
+        "\n```"
+    );
+  }
+);
+
+server.registerTool(
+  "cloudforge_list_remediations",
+  {
+    description:
+      "List remediation proposals and where each one stands: awaiting_approval, approved, " +
+      "rejected, acknowledged, applying, applied, failed or expired.",
+    inputSchema: {
+      report_id: z.string().optional().describe("Limit to one drift report."),
+      status: z.string().optional().describe("Limit to one status, e.g. awaiting_approval."),
+    },
+  },
+  async ({ report_id, status }) => {
+    const qs = new URLSearchParams();
+    if (report_id) qs.set("driftReportId", report_id);
+    if (status) qs.set("status", status);
+    const suffix = qs.toString() ? `?${qs}` : "";
+    const res = await apiFetch(`/remediation/proposals${suffix}`);
+    if (!res.ok) return errText("Could not load proposals", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 8000) + "\n```");
+  }
+);
+
+server.registerTool(
+  "cloudforge_heal_approved",
+  {
+    description:
+      "Apply the fixes a person has already approved for one drift report. Refuses if anything " +
+      "in the batch is still undecided, if nothing is approved, or if a proposal was rejected — " +
+      "healing converges the whole diagram, so it cannot skip one resource. It then pauses at the " +
+      "Terraform plan: call cloudforge_approve_deployment with the job id once the user has agreed " +
+      "to the plan. Never approve that plan without asking them.",
+    inputSchema: {
+      report_id: z.string().describe("Drift report whose approved fixes to apply."),
+    },
+  },
+  async ({ report_id }) => {
+    const r = await streamSse(`/remediation/reports/${report_id}/heal`, null);
+    return text(renderStream("drift heal", r));
+  }
+);
+
+server.registerTool(
+  "cloudforge_remediation_ledger",
+  {
+    description:
+      "The append-only audit trail: every detection, decision and action, with who did it and " +
+      "when. This is the record an auditor asks for — what changed, why, and who said it could.",
+    inputSchema: {
+      proposal_id: z.string().optional().describe("Limit to one proposal's history."),
+    },
+  },
+  async ({ proposal_id }) => {
+    const suffix = proposal_id ? `?proposalId=${proposal_id}` : "";
+    const res = await apiFetch(`/remediation/ledger${suffix}`);
+    if (!res.ok) return errText("Could not read the ledger", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 8000) + "\n```");
+  }
+);
+
+server.registerTool(
+  "cloudforge_remediation_policy",
+  {
+    description:
+      "The bounds healing works inside: which resource types are excluded from being proposed at " +
+      "all, and how long a proposal stays actionable. There is no auto-approval setting by design.",
+    inputSchema: {},
+  },
+  async () => {
+    const res = await apiFetch("/remediation/policy");
+    if (!res.ok) return errText("Could not read the remediation policy", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 4000) + "\n```");
+  }
+);
+
+// ─── Compliance ───────────────────────────────────────────────────────────────
+
+server.registerTool(
+  "cloudforge_compliance_frameworks",
+  {
+    description: "Compliance frameworks available to scan against (APRA CPS 234, CIS, and others).",
+    inputSchema: {},
+  },
+  async () => {
+    const res = await apiFetch("/Compliance/frameworks");
+    if (!res.ok) return errText("Could not load frameworks", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 4000) + "\n```");
+  }
+);
+
+server.registerTool(
+  "cloudforge_compliance_scan",
+  {
+    description:
+      "Scan a diagram against one or more compliance frameworks. Returns evidence and control mappings — " +
+      "deterministic rules, never an AI opinion, so the output is usable with an auditor.",
+    inputSchema: {
+      diagram_id: z.string().optional().describe("Saved diagram to scan."),
+      diagram_json: z.record(z.string(), z.unknown()).optional().describe("Inline {nodes, edges} instead."),
+      frameworks: z.array(z.string()).optional().describe("Framework ids from cloudforge_compliance_frameworks."),
+    },
+  },
+  async ({ diagram_id, diagram_json, frameworks }) => {
+    const res = await apiFetch("/Compliance/scan", {
+      method: "POST",
+      body: JSON.stringify({ diagramId: diagram_id, diagramJson: diagram_json ?? {}, frameworks }),
+    });
+    if (!res.ok) return errText("Compliance scan failed", res.data);
+    return text("```json\n" + JSON.stringify(res.data, null, 2).slice(0, 8000) + "\n```");
+  }
+);
+
+// ─── Policy ───────────────────────────────────────────────────────────────────
+
+server.registerTool(
+  "cloudforge_list_policies",
+  { description: "Governance policies configured for this organisation.", inputSchema: {} },
+  async () => {
+    const res = await apiFetch("/Policy");
+    if (!res.ok) return errText("Could not load policies", res.data);
+    const list = (res.data as Record<string, unknown>[]) || [];
+    if (!list.length) return text("No policies configured.");
+    return text(
+      "## Policies\n\n" +
+        list.map((p) => `- **${p.name}** — ${p.enabled === false ? "disabled" : "enabled"}${p.description ? `\n  ${p.description}` : ""}`).join("\n")
+    );
+  }
+);
+
+server.registerTool(
+  "cloudforge_evaluate_policies",
+  {
+    description:
+      "Check a design against the organisation's policies before deploying it. Returns violations. " +
+      "The deployment pipeline enforces the same rules, so clearing this first avoids a blocked apply.",
+    inputSchema: {
+      resources: z.array(z.record(z.string(), z.unknown())).describe("Diagram resources to evaluate."),
+      connections: z.array(z.record(z.string(), z.unknown())).optional().describe("Connections between them."),
+      provider: z.enum(["azure", "aws", "gcp"]).optional(),
+    },
+  },
+  async ({ resources, connections, provider }) => {
+    const res = await apiFetch("/Policy/evaluate", {
+      method: "POST",
+      body: JSON.stringify({ resources, connections, provider }),
+    });
+    if (!res.ok) return errText("Policy evaluation failed", res.data);
+    const violations = (res.data as Record<string, unknown>[]) || [];
+    if (!Array.isArray(violations) || !violations.length) return text("No policy violations.");
+    return text(
+      `## ${violations.length} policy violation(s)\n\n` +
+        violations.map((v) => `- **${v.policyName ?? v.name}** — ${v.message ?? v.description}`).join("\n")
+    );
+  }
+);
+
+// ─── Terraform in and out ─────────────────────────────────────────────────────
+
+server.registerTool(
+  "cloudforge_parse_terraform",
+  {
+    description:
+      "Turn raw HCL into a diagram structure without saving anything and without needing an account. " +
+      "Deterministic — no AI. Use it to understand or visualise Terraform the user has locally.",
+    inputSchema: { terraform_code: z.string().describe("HCL to parse. Capped at 256 KB.") },
+  },
+  async ({ terraform_code }) => {
+    const res = await apiFetch("/terraform/parse-public", {
+      method: "POST",
+      body: JSON.stringify({ content: terraform_code }),
+    });
+    if (!res.ok) return errText("Parse failed", res.data);
+    const d = res.data as Record<string, unknown>;
+    const nodes = (d.nodes || []) as CFNode[];
+    const edges = (d.edges || []) as CFEdge[];
+    if (!nodes.length) return text("No resources found in that Terraform.");
+    return text(
+      `**${nodes.length} resources · ${edges.length} connections**\n\n` +
+        "```mermaid\n" + toMermaid(nodes, edges, "Terraform") + "\n```"
+    );
+  }
+);
+
+server.registerTool(
+  "cloudforge_export_terraform",
+  {
+    description: "Export a saved diagram's Terraform as it currently stands, without regenerating it.",
+    inputSchema: { diagram_id: z.string().describe("Diagram id.") },
+  },
+  async ({ diagram_id }) => {
+    const res = await apiFetch(`/terraform/export/${diagram_id}`, { method: "POST", body: "{}" });
+    if (!res.ok) return errText("Export failed", res.data);
+    const d = res.data as Record<string, unknown>;
+    const code = (d.code || d.terraform || d.content) as string | undefined;
+    return code ? text("```hcl\n" + code + "\n```") : text("```json\n" + JSON.stringify(d, null, 2).slice(0, 6000) + "\n```");
+  }
+);
+
+// ─── Org board and templates ──────────────────────────────────────────────────
+
+server.registerTool(
+  "cloudforge_foundry_diagrams",
+  {
+    description: "Diagrams shared across the organisation — The Foundry. Distinct from the caller's own diagrams.",
+    inputSchema: {},
+  },
+  async () => {
+    const res = await apiFetch("/organization/board/diagrams");
+    if (!res.ok) return errText("Could not load The Foundry", res.data);
+    const list = (res.data as Record<string, unknown>[]) || [];
+    if (!list.length) return text("No shared diagrams yet.");
+    return text(
+      "## The Foundry\n\n" +
+        list.map((d) => `- **${d.name}** (\`${d.id}\`)${d.cloudProvider ? ` — ${d.cloudProvider}` : ""}`).join("\n")
+    );
+  }
+);
+
+server.registerTool(
+  "cloudforge_list_templates",
+  { description: "Organisation-authored diagram templates (distinct from the built-in Mold library).", inputSchema: {} },
+  async () => {
+    const res = await apiFetch("/Template");
+    if (!res.ok) return errText("Could not load templates", res.data);
+    const list = (res.data as Record<string, unknown>[]) || [];
+    if (!list.length) return text("No templates yet. The built-in Molds are available via cloudforge_list_molds.");
+    return text("## Templates\n\n" + list.map((t) => `- **${t.name}** (\`${t.id}\`)${t.description ? ` — ${t.description}` : ""}`).join("\n"));
   }
 );
 

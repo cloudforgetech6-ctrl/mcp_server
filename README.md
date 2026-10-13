@@ -21,6 +21,8 @@ MCP server for [CloudForge](https://cloudforge.cloud) — lets Claude and other 
 |------|-------------|
 | `cloudforge_generate_terraform` | Generate Terraform HCL from a natural-language architecture description |
 | `cloudforge_export_terraform_from_diagram` | Export Terraform HCL from an existing saved diagram in one step |
+| `cloudforge_parse_terraform` | Turn raw HCL into a diagram structure — deterministic, no AI, **and no account needed** |
+| `cloudforge_export_terraform` | Export a saved diagram's Terraform as it stands, without regenerating |
 | `cloudforge_import_terraform` | Parse existing HCL → diagram structure + Mermaid preview |
 
 ### AI Architect
@@ -63,6 +65,71 @@ MCP server for [CloudForge](https://cloudforge.cloud) — lets Claude and other 
 | Tool | Description |
 |------|-------------|
 | `cloudforge_get_pricing` | Get CloudForge's current plans & pricing (Free, Pro, Team, Business), incl. the 14-day free trial — fetched live |
+
+### Deploy
+
+Real infrastructure changes. `apply` and `destroy` stop at a human approval gate and change
+nothing until `cloudforge_approve_deployment` is called, so an agent cannot deploy on its own.
+
+| Tool | Description |
+|------|-------------|
+| `cloudforge_plan` | Run `terraform plan` — add/change/destroy diff plus the security quality gate. Read-only |
+| `cloudforge_dry_run` | Validate and plan without touching a cloud account |
+| `cloudforge_validate_deployment` | Provider and HCL pre-flight checks |
+| `cloudforge_apply` | Start a real deployment. **Creates resources and costs money**; stops at the approval gate |
+| `cloudforge_destroy` | Start a destroy. **Permanently deletes infrastructure**; same approval gate |
+| `cloudforge_approve_deployment` | Approve or reject a job waiting at its gate — the step that actually changes the cloud |
+| `cloudforge_deployment_status` | Status and log of one job |
+| `cloudforge_deployment_history` | Every deployment run against a diagram |
+
+### Quality & cost
+
+| Tool | Description |
+|------|-------------|
+| `cloudforge_fix_terraform` | Repair broken HCL from an error log — the same healer the deployment pipeline uses on itself |
+| `cloudforge_validate_terraform` | Syntax and provider-schema check without deploying |
+| `cloudforge_estimate_cost` | Estimated monthly cost, per resource |
+| `cloudforge_review_architecture` | AI review: reliability, security, cost, scaling trade-offs |
+
+### Drift & compliance
+
+| Tool | Description |
+|------|-------------|
+| `cloudforge_scan_drift` | Compare a diagram against what is actually deployed |
+| `cloudforge_latest_drift` | Most recent drift report for a diagram |
+| `cloudforge_drift_report` | Read one drift report by id — poll this after a scan |
+| `cloudforge_compliance_frameworks` | Frameworks available to scan against (APRA CPS 234, CIS, …) |
+| `cloudforge_compliance_scan` | Scan against frameworks — deterministic evidence and control mappings, never an AI opinion |
+
+### Self-healing — detect, approve, heal
+
+Three steps, always in that order. There is deliberately **no tool that approves a fix**: approval
+means a person read what would change and consented to it, and a tool that let an assistant grant
+that consent on their behalf would remove the only guarantee the feature offers. Detect and report
+freely; the user approves in the CloudForge panel, the VS Code extension or the JetBrains tool
+window; then heal.
+
+| Tool | Description |
+|------|-------------|
+| `cloudforge_detect_remediations` | Turn a completed drift report into proposed fixes, all awaiting a person's decision |
+| `cloudforge_list_remediations` | Proposals and where each one stands |
+| `cloudforge_heal_approved` | Apply only what a person approved; pauses at the Terraform plan for a second yes |
+| `cloudforge_remediation_ledger` | The append-only audit trail: what changed, why, and who said it could |
+| `cloudforge_remediation_policy` | The bounds healing works inside — excluded resource types, how long a proposal stays actionable |
+
+### Governance
+
+| Tool | Description |
+|------|-------------|
+| `cloudforge_list_policies` | Governance policies configured for the organisation |
+| `cloudforge_evaluate_policies` | Check a design against them before deploying — the pipeline enforces the same rules |
+
+### Shared work
+
+| Tool | Description |
+|------|-------------|
+| `cloudforge_foundry_diagrams` | Diagrams shared across the organisation (The Foundry) |
+| `cloudforge_list_templates` | Organisation-authored templates, distinct from the built-in Molds |
 
 ## Setup
 
